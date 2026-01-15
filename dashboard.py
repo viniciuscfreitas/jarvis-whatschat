@@ -7,6 +7,9 @@ import time
 import hashlib
 from main import run_analysis, INPUT_DIR, OUTPUT_DIR, get_chat_metadata
 
+import zipfile
+import io
+
 # Configurações da página
 st.set_page_config(page_title="WhatsApp Chat Analytics", page_icon="📊", layout="wide")
 
@@ -71,10 +74,10 @@ def get_processed_df(data):
 st.sidebar.title("🚀 Processamento")
 
 uploaded_files = st.sidebar.file_uploader(
-    "1. Upload de arquivos (.txt, .ogg, .m4a)",
+    "1. Upload de arquivos (ZIP ou .txt + áudios)",
     accept_multiple_files=True,
-    type=["txt", "ogg", "opus", "m4a", "wav"],
-    help="Arraste o _chat.txt e os áudios correspondentes."
+    type=["txt", "ogg", "opus", "m4a", "wav", "zip"],
+    help="Arraste o ZIP exportado do WhatsApp ou o _chat.txt e os áudios correspondentes."
 )
 
 if uploaded_files:
@@ -87,11 +90,31 @@ if uploaded_files:
             status_text.text(f"{message} {int(progress * 100)}%")
 
         with st.spinner("Salvando e Analisando..."):
-            # Passo 1: Salvar Arquivos Automaticamente
             if not os.path.exists(INPUT_DIR): os.makedirs(INPUT_DIR)
+
+            # Lista expandida de arquivos (para lidar com arquivos individuais e dentro de ZIPs)
+            files_to_process = []
+
             for uploaded_file in uploaded_files:
-                content = uploaded_file.getvalue()
-                fname = uploaded_file.name
+                if uploaded_file.name.endswith(".zip"):
+                    with zipfile.ZipFile(io.BytesIO(uploaded_file.getvalue())) as z:
+                        for zinfo in z.infolist():
+                            # Ignorar pastas e arquivos ocultos/__MACOSX
+                            if zinfo.is_dir() or "__MACOSX" in zinfo.filename or zinfo.filename.startswith("."):
+                                continue
+
+                            # Extrair arquivo
+                            with z.open(zinfo) as zf:
+                                content = zf.read()
+                                fname = os.path.basename(zinfo.filename)
+                                files_to_process.append({"name": fname, "content": content})
+                else:
+                    files_to_process.append({"name": uploaded_file.name, "content": uploaded_file.getvalue()})
+
+            # Salvar os arquivos extraídos/individuais
+            for file_item in files_to_process:
+                fname = file_item["name"]
+                content = file_item["content"]
 
                 if fname == "_chat.txt":
                     meta = get_chat_metadata(content)
@@ -144,6 +167,9 @@ else:
                     os.remove(f)
                 except:
                     pass
+            
+            # Limpa o cache do Streamlit para forçar a atualização da UI
+            st.cache_data.clear()
             st.sidebar.success("Conversa deletada!")
             time.sleep(1)
             st.rerun()
