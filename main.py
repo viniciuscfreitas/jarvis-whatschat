@@ -83,6 +83,7 @@ def find_audio_by_timestamp(date_str, files):
         if not dt:
             return None
 
+        # 1. Busca exata (já existente)
         date_part = dt.strftime("%Y-%m-%d")
         h_with_zero = dt.strftime("%I")
         h_no_zero = str(int(h_with_zero))
@@ -91,18 +92,29 @@ def find_audio_by_timestamp(date_str, files):
         p = dt.strftime("%p")
 
         for h in [h_no_zero, h_with_zero]:
-            # Busca insensível a maiúsculas/minúsculas para evitar problemas com AM/PM ou "at"
             target_pattern = f"WhatsApp Ptt {date_part} at {h}.{m}.{s} {p}".lower()
             for f in files:
                 if f.lower().startswith(target_pattern) and f.lower().endswith(('.ogg', '.opus', '.m4a', '.wav')):
                     return f
 
-            # Segunda tentativa com o formato PTT-YYYYMMDD-WA
-            date_alt = dt.strftime("%Y%m%d")
-            target_pattern_alt = f"PTT-{date_alt}-WA".lower()
-            for f in files:
-                if f.lower().startswith(target_pattern_alt) and f.lower().endswith(('.ogg', '.opus', '.m4a', '.wav')):
-                    return f
+        # 2. Busca aproximada (mesmo minuto, ignorando segundos)
+        target_minute = f"WhatsApp Ptt {date_part} at {h_no_zero}.{m}".lower()
+        target_minute_alt = f"WhatsApp Ptt {date_part} at {h_with_zero}.{m}".lower()
+
+        for f in files:
+            f_low = f.lower()
+            if (f_low.startswith(target_minute) or f_low.startswith(target_minute_alt)) and \
+               p.lower() in f_low and \
+               f_low.endswith(('.ogg', '.opus', '.m4a', '.wav')):
+                return f
+
+        # 3. Formato Android PTT-YYYYMMDD-WA (apenas por data se não tiver outro jeito)
+        date_alt = dt.strftime("%Y%m%d")
+        target_pattern_alt = f"PTT-{date_alt}-WA".lower()
+        for f in files:
+            if f.lower().startswith(target_pattern_alt) and f.lower().endswith(('.ogg', '.opus', '.m4a', '.wav')):
+                return f
+
     except Exception as e:
         logger.error(f"Erro em find_audio_by_timestamp: {e}")
     return None
@@ -167,11 +179,29 @@ class Summarizer:
 def sanitize_line(line):
     return line.replace('\u200e', '').replace('\u200f', '').replace('\u202f', ' ').replace('\xa0', ' ').strip()
 
+def parse_log_date(date_str):
+    """Converte a string de data do log para um objeto datetime."""
+    clean_date = date_str.replace('\u202f', ' ').replace('\xa0', ' ').strip()
+    for fmt in ["%d/%m/%Y, %I:%M:%S %p", "%d/%m/%Y, %H:%M:%S"]:
+        try:
+            return datetime.strptime(clean_date, fmt)
+        except ValueError:
+            continue
+    return None
+
 def process_file(file_path, transcriber, db, progress_callback=None):
     logger.info(f"📄 Processando: {os.path.basename(file_path)}")
-    input_files = os.listdir(INPUT_DIR)  # Cache de arquivos para performance (O(1) listdir)
+    input_files = os.listdir(INPUT_DIR)
     with open(file_path, 'r', encoding='utf-8') as f:
+        # Validação básica: as primeiras 5 linhas devem ter o padrão de mensagem
+        sample_lines = [f.readline() for _ in range(5)]
+        f.seek(0)
         lines = f.readlines()
+
+    is_valid = any(IOS_MSG_PATTERN.match(sanitize_line(l)) for l in sample_lines if l.strip())
+    if not is_valid and len(lines) > 0:
+        logger.error(f"❌ Arquivo inválido ou formato incompatível: {file_path}")
+        return [], ""
 
     structured_data = []
     plain_text_lines = []
@@ -189,11 +219,15 @@ def process_file(file_path, transcriber, db, progress_callback=None):
         author = match.group("author")
         content = match.group("content")
 
+        dt_obj = parse_log_date(date_str)
+        iso_date = dt_obj.isoformat() if dt_obj else None
+
         audio_match = AUDIO_ATTACHMENT_PATTERN.search(content)
         is_hidden_audio = any(marker in content for marker in AUDIO_HIDDEN_MARKERS)
 
         final_message = content
         msg_type = "text"
+        filename = None
 
         if audio_match or is_hidden_audio:
             msg_type = "audio"
@@ -221,9 +255,11 @@ def process_file(file_path, transcriber, db, progress_callback=None):
 
         structured_data.append({
             "timestamp": date_str,
+            "timestamp_iso": iso_date,
             "author": author,
             "message": final_message,
-            "type": msg_type
+            "type": msg_type,
+            "filename": filename
         })
         plain_text_lines.append(f"[{date_str}] {author}: {final_message}")
 
