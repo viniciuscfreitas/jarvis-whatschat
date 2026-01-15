@@ -1,0 +1,35 @@
+services:
+  app:
+    build: .
+    volumes:
+      - ./input:/app/input
+      - ./output:/app/output
+      - ./.env:/app/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  dashboard:
+    build: .
+    command: streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./input:/app/input
+      - ./output:/app/output
+      - ./.env:/app/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
