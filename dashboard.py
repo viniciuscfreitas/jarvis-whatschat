@@ -7,10 +7,13 @@ import time
 import zipfile
 import io
 from main import run_analysis, INPUT_DIR, OUTPUT_DIR, get_chat_metadata
+from utils import sanitize_line, parse_log_date
 
 st.set_page_config(page_title="WhatsApp Chat Analytics", page_icon="📊", layout="wide")
 
+@st.cache_data(ttl=60)
 def load_chat_files():
+    if not os.path.exists(OUTPUT_DIR): return []
     meta_files = glob.glob(os.path.join(OUTPUT_DIR, "*_metadata.json"))
     chat_info = []
     for f in meta_files:
@@ -38,6 +41,7 @@ def load_data(identity):
 
     return data, summary
 
+@st.cache_data(show_spinner=False)
 def get_processed_df(data):
     if not data: return pd.DataFrame()
     df = pd.DataFrame(data)
@@ -45,11 +49,8 @@ def get_processed_df(data):
         df['dt'] = pd.to_datetime(df['timestamp_iso'])
     else:
         def parse_dt(ts):
-            clean_ts = ts.replace('\u202f', ' ').replace('\xa0', ' ').strip()
-            for fmt in ["%d/%m/%Y, %I:%M:%S %p", "%d/%m/%Y, %H:%M:%S"]:
-                try: return pd.to_datetime(clean_ts, format=fmt)
-                except: continue
-            return pd.to_datetime(clean_ts, errors='coerce')
+            dt, _ = parse_log_date(ts)
+            return pd.to_datetime(dt) if dt else pd.to_datetime(ts, errors='coerce')
         df['dt'] = df['timestamp'].apply(parse_dt)
     df['hour'] = df['dt'].dt.hour
     df['day_name'] = df['dt'].dt.day_name()
@@ -85,17 +86,28 @@ if uploaded_files and st.sidebar.button("🔥 Iniciar Análise Completa", use_co
 
         for item in files_to_process:
             fname, content = item["name"], item["content"]
+            full_input_path = os.path.join(INPUT_DIR, fname)
+
+            # Salva o arquivo primeiro para podermos ler metadados sem manter na RAM
+            with open(full_input_path, "wb") as f:
+                f.write(content)
+
             if fname.endswith(".txt"):
-                meta = get_chat_metadata(content)
+                meta = get_chat_metadata(full_input_path)
                 if meta:
                     identity = meta['identity']
-                    fname = f"chat_{identity}.txt"
+                    new_fname = f"chat_{identity}.txt"
+                    new_path = os.path.join(INPUT_DIR, new_fname)
+
+                    # Renomeia se necessário
+                    if full_input_path != new_path:
+                        if os.path.exists(new_path): os.remove(new_path)
+                        os.rename(full_input_path, new_path)
+
                     meta_path = os.path.join(OUTPUT_DIR, f"chat_{identity}_metadata.json")
                     if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
                     with open(meta_path, 'w', encoding='utf-8') as f:
                         json.dump(meta, f, indent=4, ensure_ascii=False)
-            with open(os.path.join(INPUT_DIR, fname), "wb") as f:
-                f.write(content)
 
         if run_analysis(progress_callback=update_progress):
             st.sidebar.success("Pronto!")
@@ -166,21 +178,37 @@ else:
             st.bar_chart(df['author'].value_counts())
 
         with tab3:
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns([1, 1, 1])
             with col1:
                 authors = ["Todos"] + sorted(df["author"].unique().tolist())
                 sel_author = st.selectbox("Autor", authors)
             with col2:
                 search = st.text_input("Buscar", "")
+            with col3:
+                page_size = st.number_input("Mensagens por página", min_value=10, max_value=500, value=50)
 
             f_df = df.copy()
             if sel_author != "Todos": f_df = f_df[f_df["author"] == sel_author]
             if search: f_df = f_df[f_df["message"].str.contains(search, case=False, na=False)]
 
-            st.write(f"Exibindo {len(f_df)} de {len(df)} mensagens")
-            for idx, row in f_df.iterrows():
+            total_msg = len(f_df)
+            num_pages = (total_msg // page_size) + (1 if total_msg % page_size > 0 else 0)
+
+            if num_pages > 1:
+                page = st.select_slider("Página", options=range(1, num_pages + 1), value=1)
+            else:
+                page = 1
+
+            start_idx = (page - 1) * page_size
+            end_idx = start_idx + page_size
+
+            paged_df = f_df.iloc[start_idx:end_idx]
+
+            st.write(f"Exibindo {len(paged_df)} mensagens (Página {page} de {num_pages})")
+            for idx, row in paged_df.iterrows():
                 with st.chat_message("user" if row["author"] == df["author"].unique()[0] else "assistant"):
-                    st.write(f"**{row['author']}** - *{row['timestamp']}*")
+                    msg_id = row.get("id", idx)
+                    st.write(f"**{row['author']}** - *{row['timestamp']}* (ID: {msg_id})")
                     st.write(row["message"])
                     if row["filename"]:
                         file_p = os.path.join(INPUT_DIR, row["filename"])

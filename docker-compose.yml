@@ -1,6 +1,7 @@
 services:
   app:
     build: .
+    entrypoint: ["echo", "Service app disabled. Use dashboard to run analysis."]
     volumes:
       - .:/app
       - ./input:/app/input

@@ -1,0 +1,9 @@
+models/
+input/
+output/
+__pycache__/
+.venv/
+.git/
+*.db
+*.db-wal
+*.db-shm

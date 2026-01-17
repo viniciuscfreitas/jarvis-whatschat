@@ -21,3 +21,7 @@ output/*
 
 # Docker
 .docker/
+models/
+input/
+output/
+.env
