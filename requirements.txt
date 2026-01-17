@@ -7,3 +7,5 @@ google-generativeai>=0.8.3
 google-genai>=1.0.0
 streamlit>=1.35.0
 pandas
+pypdf
+python-docx
